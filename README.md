@@ -119,7 +119,7 @@ server:
 ### 3. Start the stack
 
 ```bash
-docker compose up -d
+docker compose up --build
 ```
 
 This starts three containers:
