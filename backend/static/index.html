@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>X-LLM-Search</title>
+        <link rel="stylesheet" href="/static/css/style.css" />
+    </head>
+    <body>
+        <!-- ── Header ── -->
+        <header class="app-header">
+            <div class="logo">
+                <span class="logo-mark">✦</span>
+                <span class="logo-text">X-LLM-Search</span>
+            </div>
+        </header>
+
+        <!-- ── Chat area ── -->
+        <main class="chat-wrapper">
+            <!-- Scrollable message history -->
+            <div id="chatHistory" class="chat-history">
+                <div class="welcome-message">
+                    <h2>What do you want to find?</h2>
+                    <p>
+                        Use <strong>Search</strong> for a quick answer or
+                        <strong>Research</strong> for a thorough multi-step deep
+                        dive. Attach images, PDFs, or text files for extra
+                        context.
+                    </p>
+                    <div class="welcome-chips">
+                        <span class="welcome-chip">🖼 Vision</span>
+                        <span class="welcome-chip">📄 PDF</span>
+                        <span class="welcome-chip">📝 TXT</span>
+                        <span class="welcome-chip">🔍 Multi-query</span>
+                        <span class="welcome-chip">💭 Reasoning</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Error banner -->
+            <div id="errorPanel" class="error-panel hidden">
+                <span>⚠️</span>
+                <span id="errorMessage"></span>
+            </div>
+
+            <!-- ── Input area ── -->
+            <div class="input-shell">
+                <!-- Attachment preview (shown when a file is attached) -->
+                <div class="attachment-preview hidden" id="attachmentPreview">
+                    <div class="attachment-item">
+                        <span class="attachment-icon" id="attachmentIcon"
+                            >📎</span
+                        >
+                        <span
+                            class="attachment-name"
+                            id="attachmentName"
+                        ></span>
+                        <button
+                            class="attachment-remove"
+                            id="attachmentRemove"
+                            title="Remove attachment"
+                        >
+                            ✕
+                        </button>
+                    </div>
+                    <img
+                        class="attachment-img-preview hidden"
+                        id="attachmentImgPreview"
+                        alt="preview"
+                    />
+                </div>
+
+                <div class="input-box">
+                    <textarea
+                        id="queryInput"
+                        placeholder="Ask anything…"
+                        rows="1"
+                    ></textarea>
+                </div>
+
+                <div class="controls-row">
+                    <!-- Left: attach button + model picker -->
+                    <div class="controls-left">
+                        <label
+                            class="attach-btn"
+                            title="Attach image, PDF, or TXT"
+                        >
+                            <input
+                                type="file"
+                                id="fileInput"
+                                accept="image/*,.pdf,.txt,text/plain"
+                                hidden
+                            />
+                            <span class="attach-icon">⊕</span>
+                        </label>
+
+                        <div class="model-picker" id="modelPicker">
+                            <button
+                                class="model-btn"
+                                id="modelBtn"
+                                title="Select model"
+                            >
+                                <span class="model-icon">⚡</span>
+                                <span id="modelLabel">Loading models…</span>
+                                <span class="chevron">▾</span>
+                            </button>
+                            <ul
+                                class="model-menu hidden"
+                                id="modelMenu"
+                                role="listbox"
+                            ></ul>
+                        </div>
+                    </div>
+
+                    <!-- Right: action button -->
+                    <div class="action-btns">
+                        <button id="btnSearch" class="btn btn-primary">
+                            Search
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <script src="/static/js/app.js"></script>
+    </body>
+</html>

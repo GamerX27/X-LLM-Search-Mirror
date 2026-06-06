@@ -1,0 +1,49 @@
+services:
+  # ── Ollama (ROCm / AMD GPU) ───────────────────────────────────────────────
+  # Equivalent to:
+  #   docker run -d --device /dev/kfd --device /dev/dri \
+  #     -v ollama:/root/.ollama -p 11434:11434 \
+  #     --name ollama ollama/ollama:rocm
+  ollama:
+    image: ollama/ollama:rocm
+    container_name: ollama-x-llm-search
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    volumes:
+      - ollama:/root/.ollama
+    ports:
+      - "11434:11434"
+    restart: unless-stopped
+
+  # ── X-LLM-Search web app ────────────────────────────────────────────────────
+  x-llm-search:
+    build: .
+    container_name: x-llm-search
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./config:/app/config
+      - .:/app
+    environment:
+      - PYTHONUNBUFFERED=1
+    depends_on:
+      - ollama
+      - searxng
+    restart: unless-stopped
+
+  # ── SearXNG search engine ─────────────────────────────────────────────────
+  searxng:
+    image: searxng/searxng:latest
+    container_name: searxng-x-llm-search
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./searxng_config/settings.yml:/etc/searxng/settings.yml:ro
+    environment:
+      - SEARXNG_BASE_URL=http://localhost:8080
+    restart: unless-stopped
+
+# ── Named volumes ─────────────────────────────────────────────────────────
+volumes:
+  ollama:

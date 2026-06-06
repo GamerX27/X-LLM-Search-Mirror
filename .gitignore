@@ -1,0 +1,34 @@
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# ── Virtual environments ───────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+
+# ── Runtime config (auto-generated, may contain custom URLs) ──────────────────
+config/settings.json
+
+# ── SearXNG runtime data ───────────────────────────────────────────────────────
+searxng_data/
+
+# ── Docker volumes / temp files ────────────────────────────────────────────────
+*.log
+*.tmp
+
+# ── IDE ────────────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db

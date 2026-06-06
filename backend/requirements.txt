@@ -1,0 +1,16 @@
+# Web framework with async support and WebSocket
+fastapi==0.115.6
+uvicorn==0.34.0
+websockets==14.1
+
+# HTTP client for API calls
+httpx==0.27.2
+
+# OpenAI-compatible client (works with Ollama, LM Studio, etc.)
+openai==1.59.3
+
+# Configuration and utilities
+pydantic==2.10.3
+python-dotenv==1.0.1
+pypdf>=4.0.0
+python-multipart>=0.0.9
