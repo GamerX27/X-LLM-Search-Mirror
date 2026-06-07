@@ -1,9 +1,5 @@
 services:
   # ── Ollama (ROCm / AMD GPU) ───────────────────────────────────────────────
-  # Equivalent to:
-  #   docker run -d --device /dev/kfd --device /dev/dri \
-  #     -v ollama:/root/.ollama -p 11434:11434 \
-  #     --name ollama ollama/ollama:rocm
   ollama:
     image: ollama/ollama:rocm
     container_name: ollama-x-llm-search
@@ -11,35 +7,47 @@ services:
       - /dev/kfd
       - /dev/dri
     volumes:
-      - ollama:/root/.ollama
+      - ./config/models:/root/.ollama
     ports:
       - "11434:11434"
     restart: unless-stopped
-    # Start the server, wait for it to be ready, then pull the model.
-    # The pull is skipped automatically if the model is already present.
-    entrypoint: ["/bin/sh", "-c"]
-    command: |
-      ollama serve &
-      until ollama list >/dev/null 2>&1; do
-        echo '[ollama-init] waiting for server...'
-        sleep 3
-      done
-      echo '[ollama-init] pulling qwen3.5:9b'
-      ollama pull qwen3.5:9b || echo '[ollama-init] WARNING: pull failed — server still running'
-      echo '[ollama-init] done'
-      wait
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 10s
+      retries: 15
+      start_period: 30s
 
-  # ── X-LLM-Search web app ────────────────────────────────────────────
+  # ── One-shot model puller ─────────────────────────────────────────────────
+  # Waits for ollama to be healthy, pulls the model, then exits.
+  # On re-deploy ollama skips the download if the model is already present.
+  # x-llm-search and searxng will not start until this exits successfully.
+  ollama-pull:
+    image: ollama/ollama:rocm
+    container_name: ollama-pull
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+    entrypoint: ["ollama", "pull", "qwen3.5:9b"]
+    restart: "no"
+
+  # ── X-LLM-Search web app ──────────────────────────────────────────────────
   x-llm-search:
     build: .
     container_name: x-llm-search
     ports:
       - "8000:8000"
+    volumes:
+      - ./config/app:/app/config
     environment:
       - PYTHONUNBUFFERED=1
     depends_on:
-      - ollama
-      - searxng
+      ollama-pull:
+        condition: service_completed_successfully
+      searxng:
+        condition: service_started
     restart: unless-stopped
 
   # ── SearXNG search engine ─────────────────────────────────────────────────
@@ -49,11 +57,10 @@ services:
     ports:
       - "8080:8080"
     volumes:
-      - ./searxng_config/settings.yml:/etc/searxng/settings.yml:ro
+      - ./config/searxng/settings.yml:/etc/searxng/settings.yml:ro
     environment:
       - SEARXNG_BASE_URL=http://localhost:8080
+    depends_on:
+      ollama-pull:
+        condition: service_completed_successfully
     restart: unless-stopped
-
-# ── Named volumes ─────────────────────────────────────────────────────────
-volumes:
-  ollama:

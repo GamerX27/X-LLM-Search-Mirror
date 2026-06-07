@@ -16,10 +16,12 @@ env/
 ENV/
 
 # ── Runtime config (auto-generated, may contain custom URLs) ──────────────────
-config/settings.json
+# ── Runtime / generated config (may contain local URLs and secrets) ────────────────
+config/app/settings.json
 
-# ── SearXNG runtime data ───────────────────────────────────────────────────────
-searxng_data/
+# ── Ollama model files (large binaries, re-pulled on first deploy) ────────────────
+config/models/*
+!config/models/.gitkeep
 
 # ── Docker volumes / temp files ────────────────────────────────────────────────
 *.log
