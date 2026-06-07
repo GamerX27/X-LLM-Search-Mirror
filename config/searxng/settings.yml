@@ -1,0 +1,20 @@
+# SearXNG configuration for Deep Search
+# The key setting here is search.formats — JSON must be explicitly enabled
+# or all API requests return 403 Forbidden.
+
+use_default_settings: true
+
+server:
+  secret_key: "deep-search-secret-change-me"
+  limiter: false # disable rate limiting for local use
+  image_proxy: false
+
+search:
+  # Enable JSON format so the Deep Search backend can query results via API
+  formats:
+    - html
+    - json
+
+  safe_search: 0 # 0 = off, 1 = moderate, 2 = strict
+  autocomplete: ""
+  default_lang: "en"
