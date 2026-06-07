@@ -19,9 +19,9 @@ services:
       start_period: 30s
 
   # ── One-shot model puller ─────────────────────────────────────────────────
-  # Waits for ollama to be healthy, pulls the model, then exits.
-  # On re-deploy ollama skips the download if the model is already present.
-  # x-llm-search and searxng will not start until this exits successfully.
+  # Pulls the model in the background after ollama is healthy.
+  # x-llm-search starts immediately — the model appears in the picker
+  # automatically once the download finishes.
   ollama-pull:
     image: ollama/ollama:rocm
     container_name: ollama-pull
@@ -44,8 +44,8 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
     depends_on:
-      ollama-pull:
-        condition: service_completed_successfully
+      ollama:
+        condition: service_healthy
       searxng:
         condition: service_started
     restart: unless-stopped
@@ -60,7 +60,4 @@ services:
       - ./config/searxng/settings.yml:/etc/searxng/settings.yml:ro
     environment:
       - SEARXNG_BASE_URL=http://localhost:8080
-    depends_on:
-      ollama-pull:
-        condition: service_completed_successfully
     restart: unless-stopped
