@@ -1,10 +1,40 @@
 // X-LLM-Search — frontend
 
+// ── Mobile detection ──────────────────────────────────────────────────────
+// Uses User-Agent + coarse pointer (touch screen) + narrow viewport.
+// Result is stamped as a body class so CSS can respond immediately.
+const isMobile = (() => {
+  const ua =
+    /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
+      navigator.userAgent,
+    );
+  const touch = window.matchMedia("(pointer: coarse)").matches;
+  const narrow = window.matchMedia("(max-width: 900px)").matches;
+  return ua || (touch && narrow);
+})();
+
+if (isMobile) document.body.classList.add("is-mobile");
+
+// ── Viewport height tracker ────────────────────────────────────────────────
+// window.innerHeight is the usable height AFTER browser chrome is subtracted.
+// We write it to --real-vh so the CSS layout never gets clipped behind a
+// mobile address bar, gesture bar, or Samsung's nav strip.
+function updateVh() {
+  document.documentElement.style.setProperty(
+    "--real-vh",
+    window.innerHeight + "px",
+  );
+}
+updateVh();
+window.addEventListener("resize", updateVh);
+// orientationchange fires before the new dimensions settle — wait briefly.
+window.addEventListener("orientationchange", () => setTimeout(updateVh, 300));
+
 // ── State ──────────────────────────────────────────────────────────────────
 const state = {
   selectedModel: null,
   isSearching: false,
-  attachment: null, // {type:"text"|"image", content, dataUrl, filename, mimeType}
+  conversationHistory: [], // [{role:"user"|"assistant", content:"..."}] — in-memory session
 };
 
 // ── DOM refs ───────────────────────────────────────────────────────────────
@@ -16,12 +46,6 @@ const errorMessage = document.getElementById("errorMessage");
 const modelBtn = document.getElementById("modelBtn");
 const modelLabel = document.getElementById("modelLabel");
 const modelMenu = document.getElementById("modelMenu");
-const fileInput = document.getElementById("fileInput");
-const attachmentPreview = document.getElementById("attachmentPreview");
-const attachmentName = document.getElementById("attachmentName");
-const attachmentIcon = document.getElementById("attachmentIcon");
-const attachmentRemove = document.getElementById("attachmentRemove");
-const attachmentImgPreview = document.getElementById("attachmentImgPreview");
 
 // ── Auto-grow textarea ─────────────────────────────────────────────────────
 queryInput.addEventListener("input", () => {
@@ -94,154 +118,217 @@ function selectModel(id) {
     .forEach((li) => li.classList.toggle("active", li.textContent === id));
 }
 
-// ── Attachment helpers ─────────────────────────────────────────────────────
-function readFileAsDataURL(file) {
-  return new Promise((res, rej) => {
-    const r = new FileReader();
-    r.onload = (e) => res(e.target.result);
-    r.onerror = rej;
-    r.readAsDataURL(file);
-  });
-}
-
-function readFileAsText(file) {
-  return new Promise((res, rej) => {
-    const r = new FileReader();
-    r.onload = (e) => res(e.target.result);
-    r.onerror = rej;
-    r.readAsText(file);
-  });
-}
-
-function clearAttachment() {
-  state.attachment = null;
-  attachmentPreview.classList.add("hidden");
-  attachmentImgPreview.classList.add("hidden");
-  attachmentImgPreview.src = "";
-  if (fileInput) fileInput.value = "";
-}
-
-function getAttachmentPayload() {
-  if (!state.attachment) return null;
-  return {
-    type: state.attachment.type,
-    content: state.attachment.content || null,
-    data_url: state.attachment.dataUrl || null,
-    filename: state.attachment.filename || null,
-  };
-}
-
-async function handleFileSelect(e) {
-  const file = e.target.files[0];
-  if (!file) return;
-
-  clearError();
-  const ext = file.name.split(".").pop().toLowerCase();
-  const isImage = file.type.startsWith("image/");
-  const isPDF = ext === "pdf" || file.type === "application/pdf";
-  const isTXT = ext === "txt" || file.type.startsWith("text/");
-
-  try {
-    if (isImage) {
-      const dataUrl = await readFileAsDataURL(file);
-      state.attachment = {
-        type: "image",
-        dataUrl,
-        filename: file.name,
-        mimeType: file.type,
-      };
-      attachmentImgPreview.src = dataUrl;
-      attachmentImgPreview.classList.remove("hidden");
-      attachmentIcon.textContent = "🖼";
-    } else if (isPDF) {
-      const formData = new FormData();
-      formData.append("file", file);
-      const res = await fetch("/api/parse-pdf", {
-        method: "POST",
-        body: formData,
-      });
-      if (!res.ok) throw new Error(`PDF parse failed (${res.status})`);
-      const data = await res.json();
-      state.attachment = {
-        type: "text",
-        content: data.content,
-        filename: file.name,
-      };
-      attachmentImgPreview.classList.add("hidden");
-      attachmentIcon.textContent = "📄";
-    } else if (isTXT) {
-      const content = await readFileAsText(file);
-      state.attachment = { type: "text", content, filename: file.name };
-      attachmentImgPreview.classList.add("hidden");
-      attachmentIcon.textContent = "📝";
-    } else {
-      showError("Unsupported file type. Use images, PDF, or TXT.");
-      return;
-    }
-
-    attachmentName.textContent = file.name;
-    attachmentPreview.classList.remove("hidden");
-  } catch (err) {
-    showError(err.message);
+// ── Conversation history helpers ───────────────────────────────────────────
+function addToHistory(role, content) {
+  state.conversationHistory.push({ role, content });
+  // Keep at most 20 messages (10 exchanges) to avoid ballooning memory
+  if (state.conversationHistory.length > 20) {
+    state.conversationHistory = state.conversationHistory.slice(-20);
   }
-  if (fileInput) fileInput.value = "";
 }
 
-// Wire up file input and remove button
-if (fileInput) fileInput.addEventListener("change", handleFileSelect);
-if (attachmentRemove)
-  attachmentRemove.addEventListener("click", clearAttachment);
+function getHistory() {
+  // Send last 6 messages (3 exchanges) to the backend for context
+  return state.conversationHistory.slice(-6);
+}
 
 // ── Markdown renderer ──────────────────────────────────────────────────────
-// sources: array of {num, title, url} — used to make [Source N] clickable.
+// Supports: headings, bold/italic/code, links, tables, ul, ol, citations.
 function md(text, sources = []) {
   if (!text) return "";
 
-  // Build a num→source lookup
   const srcMap = {};
   sources.forEach((s) => {
     srcMap[s.num] = s;
   });
 
-  let html = text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/^### (.+)$/gm, "<h3>$1</h3>")
-    .replace(/^## (.+)$/gm, "<h2>$1</h2>")
-    .replace(/^# (.+)$/gm, "<h1>$1</h1>")
-    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
-    .replace(/\*(.+?)\*/g, "<em>$1</em>")
-    .replace(/`(.+?)`/g, "<code>$1</code>")
-    .replace(/\[(.+?)\]\((.+?)\)/g, '<a href="$2" target="_blank">$1</a>')
-    .replace(/^\* (.+)$/gm, "<li>$1</li>")
-    .replace(/(<li>.*<\/li>\n?)+/g, "<ul>$&</ul>")
-    .replace(/\n{2,}/g, "</p><p>")
-    .replace(/\n/g, "<br>")
-    // Linkify [Source N] citations
-    .replace(/\[Source (\d+)\]/g, (_match, num) => {
-      const n = parseInt(num, 10);
-      const s = srcMap[n];
-      return s
-        ? `<a href="${s.url}" target="_blank" rel="noopener" class="src-ref" title="${s.title}">[${n}]</a>`
-        : ""; // remove unknown refs
-    })
-    // Linkify bare numeric citations: [18] or [18, 22] or [18, 22, 5]
-    .replace(/\[(\d+(?:,\s*\d+)*)\]/g, (_match, nums) => {
-      const links = nums
-        .split(",")
-        .map((p) => parseInt(p.trim(), 10))
-        .map((n) => {
-          const s = srcMap[n];
-          return s
-            ? `<a href="${s.url}" target="_blank" rel="noopener" class="src-ref" title="${s.title}">[${n}]</a>`
-            : null;
-        })
-        .filter(Boolean);
-      return links.join("\u202f"); // thin space between refs, empty string if none match
-    });
+  // HTML-escape a raw string (used on content before inserting into elements)
+  const esc = (s) =>
+    String(s)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
 
-  // Collapsible references list
+  // Apply inline markdown + citation links to an already-escaped string
+  const inline = (s) =>
+    s
+      .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+      .replace(/\*(.+?)\*/g, "<em>$1</em>")
+      .replace(/`(.+?)`/g, "<code>$1</code>")
+      .replace(
+        /\[(.+?)\]\((.+?)\)/g,
+        '<a href="$2" target="_blank" rel="noopener">$1</a>',
+      )
+      // [Source N]
+      .replace(/\[Source (\d+)\]/g, (_m, num) => {
+        const n = parseInt(num, 10);
+        const s = srcMap[n];
+        return s
+          ? `<a href="${s.url}" target="_blank" rel="noopener" class="src-ref" title="${esc(s.title)}">[${n}]</a>`
+          : "";
+      })
+      // bare [N] or [N, M, ...]
+      .replace(/\[(\d+(?:,\s*\d+)*)\]/g, (_m, nums) => {
+        const links = nums
+          .split(",")
+          .map((p) => parseInt(p.trim(), 10))
+          .map((n) => {
+            const s = srcMap[n];
+            return s
+              ? `<a href="${s.url}" target="_blank" rel="noopener" class="src-ref" title="${esc(s.title)}">[${n}]</a>`
+              : null;
+          })
+          .filter(Boolean);
+        return links.join("\u202f");
+      });
+
+  // Parse a pipe-separated table row into an array of cell strings
+  const parseRow = (line) =>
+    line
+      .replace(/^\s*\|/, "")
+      .replace(/\|\s*$/, "")
+      .split("|")
+      .map((c) => c.trim());
+
+  const isTableRow = (line) => /^\s*\|/.test(line);
+  const isSepRow = (line) => /^\s*\|[\s\-:|]+\|/.test(line);
+
+  const lines = text.split("\n");
+  let html = "";
+  let i = 0;
+  let inPara = false;
+
+  const openPara = () => {
+    if (!inPara) {
+      html += "<p>";
+      inPara = true;
+    }
+  };
+  const closePara = () => {
+    if (inPara) {
+      html += "</p>";
+      inPara = false;
+    }
+  };
+
+  while (i < lines.length) {
+    const raw = lines[i];
+    const line = raw.trimEnd();
+
+    // ── Blank line → paragraph break
+    if (line.trim() === "") {
+      closePara();
+      i++;
+      continue;
+    }
+
+    // ── ATX headings
+    let m;
+    if ((m = line.match(/^(#{1,3}) (.+)$/))) {
+      closePara();
+      const level = m[1].length;
+      html += `<h${level}>${inline(esc(m[2]))}</h${level}>`;
+      i++;
+      continue;
+    }
+
+    // ── Horizontal rule
+    if (/^[\-*_]{3,}\s*$/.test(line)) {
+      closePara();
+      html += "<hr>";
+      i++;
+      continue;
+    }
+
+    // ── Fenced code block ```
+    if (line.startsWith("```")) {
+      closePara();
+      const lang = line.slice(3).trim();
+      i++;
+      const codeLines = [];
+      while (i < lines.length && !lines[i].startsWith("```")) {
+        codeLines.push(esc(lines[i]));
+        i++;
+      }
+      i++; // consume closing ```
+      html += `<pre><code${lang ? ` class="language-${esc(lang)}"` : ""}>${codeLines.join("\n")}</code></pre>`;
+      continue;
+    }
+
+    // ── Markdown table (pipe-based)
+    if (isTableRow(line)) {
+      // Collect all consecutive table rows
+      const tableLines = [];
+      while (i < lines.length && isTableRow(lines[i])) {
+        tableLines.push(lines[i]);
+        i++;
+      }
+      // Need at least header + separator rows
+      if (tableLines.length >= 2 && isSepRow(tableLines[1])) {
+        closePara();
+        const headers = parseRow(tableLines[0]);
+        const dataRows = tableLines.slice(2);
+        const thead =
+          `<thead><tr>` +
+          headers.map((h) => `<th>${inline(esc(h))}</th>`).join("") +
+          `</tr></thead>`;
+        const tbody =
+          `<tbody>` +
+          dataRows
+            .map(
+              (r) =>
+                `<tr>` +
+                parseRow(r)
+                  .map((c) => `<td>${inline(esc(c))}</td>`)
+                  .join("") +
+                `</tr>`,
+            )
+            .join("") +
+          `</tbody>`;
+        html += `<div class="md-table-wrap"><table class="md-table">${thead}${tbody}</table></div>`;
+      } else {
+        // Not a proper table — treat rows as plain text
+        tableLines.forEach((tl) => {
+          openPara();
+          html += inline(esc(tl)) + "<br>";
+        });
+      }
+      continue;
+    }
+
+    // ── Unordered list
+    if (/^[\*\-] /.test(line)) {
+      closePara();
+      html += "<ul>";
+      while (i < lines.length && /^[\*\-] /.test(lines[i].trimEnd())) {
+        html += `<li>${inline(esc(lines[i].replace(/^[\*\-] /, "")))}</li>`;
+        i++;
+      }
+      html += "</ul>";
+      continue;
+    }
+
+    // ── Ordered list
+    if (/^\d+\. /.test(line)) {
+      closePara();
+      html += "<ol>";
+      while (i < lines.length && /^\d+\. /.test(lines[i].trimEnd())) {
+        html += `<li>${inline(esc(lines[i].replace(/^\d+\. /, "")))}</li>`;
+        i++;
+      }
+      html += "</ol>";
+      continue;
+    }
+
+    // ── Regular paragraph text
+    openPara();
+    html += inline(esc(line)) + " ";
+    i++;
+  }
+
+  closePara();
+
+  // ── Collapsible references list
   if (sources.length > 0) {
     const items = sources
       .map((s) => {
@@ -255,7 +342,7 @@ function md(text, sources = []) {
           `<li><a href="${s.url}" target="_blank" rel="noopener">` +
           `<img src="https://www.google.com/s2/favicons?domain=${domain}&sz=16" ` +
           `width="12" height="12" alt="" onerror="this.style.display='none'" />` +
-          ` ${s.title}</a></li>`
+          ` ${esc(s.title)}</a></li>`
         );
       })
       .join("");
@@ -272,6 +359,18 @@ function md(text, sources = []) {
 
   return html;
 }
+
+// ── Example query chips ────────────────────────────────────────────────────
+document.addEventListener("click", (e) => {
+  const btn = e.target.closest(".example-query");
+  if (!btn || state.isSearching) return;
+  const q = btn.dataset.query;
+  if (!q) return;
+  queryInput.value = q;
+  queryInput.style.height = "auto";
+  queryInput.style.height = queryInput.scrollHeight + "px";
+  handleSearch();
+});
 
 // ── Chat helpers ───────────────────────────────────────────────────────────
 function clearWelcome() {
@@ -294,21 +393,6 @@ function appendMessage(role, html) {
   const body = document.createElement("div");
   body.className = "msg-body";
   body.innerHTML = html;
-  // Render attachment in user bubbles
-  if (role === "user" && state.attachment) {
-    if (state.attachment.type === "image" && state.attachment.dataUrl) {
-      const img = document.createElement("img");
-      img.src = state.attachment.dataUrl;
-      img.className = "msg-attachment-img";
-      img.alt = state.attachment.filename || "attachment";
-      body.appendChild(img);
-    } else if (state.attachment.type === "text" && state.attachment.filename) {
-      const chip = document.createElement("div");
-      chip.className = "msg-attachment-chip";
-      chip.textContent = `📎 ${state.attachment.filename}`;
-      body.appendChild(chip);
-    }
-  }
   wrap.appendChild(avatar);
   wrap.appendChild(body);
   chatHistory.appendChild(wrap);
@@ -514,7 +598,6 @@ function addStep({ label, main, sub = "", url = null, emoji = "⚙️" }) {
   if (url) {
     try {
       const domain = new URL(url).hostname;
-      // Google's favicon API — falls back to globe emoji on error
       iconHtml = `<img
                 class="rc-favicon"
                 src="https://www.google.com/s2/favicons?domain=${domain}&sz=32"
@@ -598,7 +681,7 @@ function finishResearchCard() {
     if (st) st.innerHTML = '<span class="step-done-icon">✓</span>';
   }
   if (rcSpinner) rcSpinner.innerHTML = '<div class="rc-done">✓</div>';
-  if (rcSubtitle) rcSubtitle.textContent = "Research complete";
+  if (rcSubtitle) rcSubtitle.textContent = "Search complete";
   if (rcProgressFill) rcProgressFill.style.width = "100%";
 
   // Mark all plan steps done
@@ -720,7 +803,6 @@ function handleProgressEvent(event) {
       break;
 
     case "search_complete":
-      // Just update the subtitle — no new step row
       rcSubtitle.textContent = `Found ${event.result_count ?? "?"} results for "${event.query}"`;
       break;
 
@@ -770,11 +852,14 @@ function handleProgressEvent(event) {
       rcInMultiSearch = false; // synthesis phase — individual rows resume
       rcSubtitle.textContent = event.status || "Analyzing…";
       // Bump progress bar for the final summarisation step
-      if (event.status && event.status.startsWith("Analyzing results")) {
-        if (rcProgressFill) rcProgressFill.style.width = "75%";
+      if (event.status && event.status.startsWith("Synthesizing")) {
+        if (rcProgressFill) rcProgressFill.style.width = "85%";
+      } else if (event.status && event.status.startsWith("Checking")) {
+        if (rcProgressFill) rcProgressFill.style.width = "70%";
+      } else if (event.status && event.status.startsWith("Reading")) {
+        if (rcProgressFill) rcProgressFill.style.width = "50%";
       }
       // Only create a new row when the label changes
-      // (the backend emits multiple analyze events per iteration)
       if (
         !rcActiveStep ||
         rcActiveStep.querySelector(".rc-step-label")?.textContent !==
@@ -822,7 +907,6 @@ function handleProgressEvent(event) {
       rcInMultiSearch = false;
       const idx = event.index ?? 0;
       const total = event.total ?? rcMaxIterations;
-      // Mark all prior steps done, activate current
       rcPlanStepEls.forEach((el, i) => {
         if (i < idx) {
           el.className = "rc-plan-step done";
@@ -846,8 +930,6 @@ function handleProgressEvent(event) {
     }
 
     case "step_result": {
-      // Per-step findings streamed as they're computed.
-      // Stored so the frontend can show them if the final LLM report is empty.
       if (event.title || event.content) {
         rcStepResults.push({
           title: event.title || "",
@@ -904,13 +986,11 @@ function clearError() {
   errorMessage.textContent = "";
 }
 
-// ── Normal search ──────────────────────────────────────────────────────────
-// ── Normal search (WebSocket, mirrors deep search flow) ────────────────────
+// ── Normal search (WebSocket with live progress events) ────────────────────
 function runNormalSearch(query) {
-  const attachmentPayload = getAttachmentPayload(); // capture before clearing
   clearError();
+  addToHistory("user", query);
   appendMessage("user", query);
-  clearAttachment();
   setBusy(true);
 
   createSearchCard();
@@ -923,7 +1003,8 @@ function runNormalSearch(query) {
       JSON.stringify({
         query,
         model: state.selectedModel,
-        attachment: attachmentPayload,
+        history: getHistory(),
+        is_mobile: isMobile,
       }),
     );
   };
@@ -932,69 +1013,13 @@ function runNormalSearch(query) {
     const event = JSON.parse(ev.data);
 
     if (event.type === "answer" && event.content !== undefined) {
-      // Final answer from the backend — show it below the search card
       finishResearchCard();
       setBusy(false);
       const html = md(event.content || "", event.sources || []);
       appendMessage("assistant", html || buildFallbackFromSteps());
+      // Record assistant answer in conversation history
+      addToHistory("assistant", event.content || "");
       rcStepResults = [];
-    } else if (event.type === "error") {
-      finishResearchCard();
-      setBusy(false);
-      showError(event.message);
-    } else {
-      handleProgressEvent(event);
-    }
-  };
-
-  ws.onerror = () => {
-    finishResearchCard();
-    setBusy(false);
-    showError("WebSocket connection failed. Is the server running?");
-  };
-
-  ws.onclose = () => {
-    if (state.isSearching) setBusy(false);
-  };
-}
-
-// ── Deep search ────────────────────────────────────────────────────────────
-function runDeepSearch(query) {
-  const attachmentPayload = getAttachmentPayload(); // capture before clearing
-  clearError();
-  appendMessage("user", query);
-  clearAttachment();
-  setBusy(true);
-
-  // Create the live research card in the chat
-  createResearchCard(5);
-
-  const proto = location.protocol === "https:" ? "wss" : "ws";
-  const ws = new WebSocket(`${proto}://${location.host}/ws/deep-search`);
-
-  ws.onopen = () => {
-    ws.send(
-      JSON.stringify({
-        query,
-        model: state.selectedModel,
-        max_iterations: 5,
-        attachment: attachmentPayload,
-      }),
-    );
-  };
-
-  ws.onmessage = (ev) => {
-    const event = JSON.parse(ev.data);
-
-    if (event.type === "report" && event.content !== undefined) {
-      // Final report from main.py — has content + sources.
-      // Progress "report" events (emitted inside deep_search()) have no
-      // content field and fall through to handleProgressEvent instead.
-      finishResearchCard();
-      setBusy(false);
-      const html = md(event.content || "", event.sources || []);
-      appendMessage("assistant", html || buildFallbackFromSteps());
-      rcStepResults = []; // clear after use
     } else if (event.type === "error") {
       finishResearchCard();
       setBusy(false);

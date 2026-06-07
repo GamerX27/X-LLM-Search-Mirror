@@ -111,6 +111,16 @@ class LLMClient:
                         r"<think>.*?</think>", "", raw, flags=re.DOTALL
                     ).strip()
 
+            # Safety net: if stripping think tags left content empty but we have
+            # native thinking, the model returned its answer inside the thinking
+            # block only (common with some Ollama builds).  Surface it as content.
+            if not raw and thinking:
+                logger.warning(
+                    "Content empty after think-tag stripping — using thinking as answer"
+                )
+                raw = thinking
+                thinking = ""
+
             if thinking:
                 logger.debug(
                     f"Thinking captured ({len(thinking)} chars), "
@@ -141,6 +151,13 @@ class LLMClient:
                     raw = re.sub(
                         r"<think>.*?</think>", "", raw, flags=re.DOTALL
                     ).strip()
+            # Same safety net as above
+            if not raw and thinking:
+                logger.warning(
+                    "Content empty after think-tag stripping (fallback path) — using thinking as answer"
+                )
+                raw = thinking
+                thinking = ""
             return raw, thinking
         except Exception as e:
             logger.error(f"LLM request failed: {e}")

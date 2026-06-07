@@ -40,10 +40,22 @@
     --mono: "JetBrains Mono", "Fira Code", monospace;
 }
 
-/* ── Base ── */
-html,
+/* ── Base ──
+   body is a flex column so the header takes its natural height and
+   .chat-wrapper fills whatever is left — no hard-coded calc() needed.
+   --real-vh is set by JS to window.innerHeight (browser chrome excluded).
+   dvh is the CSS-native equivalent for modern browsers.
+── */
+html {
+    height: 100%;
+    /* dvh adjusts as mobile address bar shows/hides */
+    height: 100dvh;
+}
 body {
     height: 100%;
+    height: var(--real-vh, 100dvh); /* JS value wins when available */
+    display: flex;
+    flex-direction: column;
     font-family: var(--font);
     background: var(--bg);
     color: var(--text);
@@ -53,9 +65,12 @@ body {
 
 /* ── Header ── */
 .app-header {
+    flex-shrink: 0; /* never compress the header */
     display: flex;
     align-items: center;
     padding: 14px 28px;
+    /* Push below iOS notch / status bar */
+    padding-top: calc(14px + env(safe-area-inset-top, 0px));
     background: var(--surface);
     border-bottom: 1px solid var(--border);
     backdrop-filter: blur(12px);
@@ -82,26 +97,53 @@ body {
     background-clip: text;
 }
 
-/* ── Main layout ── */
+/* ── Main layout ──
+   flex: 1 fills all vertical space below the header — no hard-coded height.
+   min-height: 0 lets a flex child shrink below its content size (required).
+   Full viewport width keeps the scrollbar at the screen’s right edge.
+── */
 .chat-wrapper {
+    flex: 1;
+    min-height: 0; /* critical: prevents flex overflow on mobile */
     display: flex;
     flex-direction: column;
-    height: calc(100vh - 57px);
-    max-width: 820px;
-    margin: 0 auto;
-    padding: 0 16px 16px;
+    width: 100%;
+    overflow: hidden;
+}
+
+/* ── Centring column shared by chat content and input bar ── */
+.col {
+    max-width: 860px;
+    width: 100%;
+    margin-left: auto;
+    margin-right: auto;
+    padding-left: 24px;
+    padding-right: 24px;
+    box-sizing: border-box;
 }
 
 /* ── Chat history ── */
 .chat-history {
     flex: 1;
     overflow-y: auto;
-    padding: 28px 4px 16px;
+    padding-top: 32px;
+    padding-bottom: 12px;
     scroll-behavior: smooth;
 }
 
+/* Every direct child (message bubbles, welcome, research cards) is centred */
+.chat-history > * {
+    max-width: 860px;
+    width: 100%;
+    margin-left: auto;
+    margin-right: auto;
+    padding-left: 24px;
+    padding-right: 24px;
+    box-sizing: border-box;
+}
+
 .chat-history::-webkit-scrollbar {
-    width: 5px;
+    width: 6px;
 }
 .chat-history::-webkit-scrollbar-track {
     background: transparent;
@@ -114,44 +156,60 @@ body {
 /* ── Welcome ── */
 .welcome-message {
     text-align: center;
-    padding: 60px 20px 40px;
+    padding: 64px 0 48px;
     color: var(--text-sub);
 }
 .welcome-message h2 {
-    font-size: 28px;
+    font-size: 30px;
     font-weight: 700;
     color: var(--text);
-    margin-bottom: 12px;
+    margin-bottom: 14px;
 }
 .welcome-message p {
     font-size: 15px;
-    max-width: 480px;
-    margin: 0 auto;
+    max-width: 500px;
+    margin: 0 auto 28px;
+    line-height: 1.65;
 }
 .welcome-message strong {
     color: var(--text);
 }
-.welcome-chips {
+
+/* ── Example query suggestion chips ── */
+.example-queries {
     display: flex;
     flex-wrap: wrap;
     justify-content: center;
-    gap: 8px;
-    margin-top: 20px;
+    gap: 10px;
+    margin-top: 4px;
 }
-.welcome-chip {
+.example-query {
     background: var(--surface2);
     border: 1px solid var(--border);
-    border-radius: 20px;
-    padding: 4px 12px;
-    font-size: 12px;
-    color: var(--text-muted);
+    border-radius: var(--r-md);
+    padding: 9px 16px;
+    font-size: 13px;
+    font-family: var(--font);
+    color: var(--text-sub);
+    cursor: pointer;
+    transition:
+        background 0.15s,
+        border-color 0.15s,
+        color 0.15s;
+    text-align: left;
+    line-height: 1.4;
+}
+.example-query:hover {
+    background: var(--surface3);
+    border-color: rgba(59, 130, 246, 0.4);
+    color: var(--text);
 }
 
 /* ── Chat messages ── */
 .msg {
     display: flex;
     gap: 14px;
-    margin-bottom: 24px;
+    margin-bottom: 28px;
     animation: slideUp 0.25s ease;
 }
 
@@ -178,13 +236,14 @@ body {
 }
 
 .msg-body {
-    max-width: 82%;
+    max-width: 78%;
+    min-width: 0;
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: var(--r-lg);
-    padding: 14px 18px;
+    padding: 16px 20px;
     font-size: 15px;
-    line-height: 1.75;
+    line-height: 1.8;
 }
 .msg.user .msg-body {
     background: var(--blue);
@@ -737,6 +796,20 @@ body {
     text-overflow: ellipsis;
 }
 
+/* ── Input area wrapper — centred, sits below the scrollable chat history ── */
+.input-area {
+    flex-shrink: 0;
+    width: 100%;
+    padding: 8px 24px 20px;
+    /* Lift above Android gesture bar / iOS home indicator */
+    padding-bottom: calc(20px + env(safe-area-inset-bottom, 0px));
+    box-sizing: border-box;
+    /* centred content column */
+    max-width: 860px;
+    margin-left: auto;
+    margin-right: auto;
+}
+
 /* ── Error banner ── */
 .error-panel {
     display: flex;
@@ -751,19 +824,17 @@ body {
     margin: 8px 0;
 }
 
-/* ── Input shell ── */
+/* ── Input shell — unified container (textarea + controls in one rounded box) ── */
 .input-shell {
-    padding-top: 10px;
-}
-
-.input-box {
+    margin-top: 0;
+    flex-shrink: 0;
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: var(--r-xl);
-    padding: 14px 18px;
+    padding: 16px 18px 12px;
     transition: border-color 0.2s;
 }
-.input-box:focus-within {
+.input-shell:focus-within {
     border-color: rgba(59, 130, 246, 0.5);
 }
 
@@ -775,9 +846,11 @@ body {
     font-family: var(--font);
     font-size: 15px;
     resize: none;
-    max-height: 180px;
+    max-height: 200px;
     overflow-y: auto;
     line-height: 1.6;
+    display: block;
+    margin-bottom: 8px;
 }
 #queryInput:focus {
     outline: none;
@@ -786,94 +859,13 @@ body {
     color: var(--text-muted);
 }
 
-/* ── Attachment preview ── */
-.attachment-preview {
-    margin-bottom: 8px;
-    padding: 8px 12px;
-    background: var(--surface2);
-    border: 1px solid var(--border);
-    border-radius: var(--r-md);
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-}
-.attachment-item {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-}
-.attachment-icon {
-    font-size: 16px;
-    flex-shrink: 0;
-}
-.attachment-name {
-    font-size: 13px;
-    color: var(--text-sub);
-    flex: 1;
-    min-width: 0;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-.attachment-remove {
-    background: none;
-    border: none;
-    color: var(--text-muted);
-    cursor: pointer;
-    font-size: 13px;
-    padding: 2px 5px;
-    border-radius: 4px;
-    line-height: 1;
-    flex-shrink: 0;
-    transition:
-        color 0.15s,
-        background 0.15s;
-}
-.attachment-remove:hover {
-    color: var(--red);
-    background: rgba(239, 68, 68, 0.1);
-}
-.attachment-img-preview {
-    max-height: 160px;
-    max-width: 100%;
-    border-radius: var(--r-sm);
-    object-fit: cover;
-    border: 1px solid var(--border);
-}
-
-/* ── Attach button ── */
-.attach-btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 34px;
-    height: 34px;
-    border-radius: var(--r-sm);
-    border: 1px solid var(--border);
-    background: var(--surface2);
-    cursor: pointer;
-    color: var(--text-muted);
-    font-size: 18px;
-    transition:
-        background 0.15s,
-        color 0.15s;
-    flex-shrink: 0;
-}
-.attach-btn:hover {
-    background: var(--surface3);
-    color: var(--text);
-}
-.attach-icon {
-    line-height: 1;
-    user-select: none;
-}
-
-/* ── Controls row ── */
+/* ── Controls row — inside .input-shell, separated by a subtle line ── */
 .controls-row {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    margin-top: 10px;
+    border-top: 1px solid var(--border);
+    padding-top: 10px;
     gap: 10px;
 }
 
@@ -881,29 +873,6 @@ body {
     display: flex;
     align-items: center;
     gap: 8px;
-}
-
-/* ── Attachment rendering in message bubbles ── */
-.msg-attachment-img {
-    display: block;
-    max-width: 100%;
-    max-height: 280px;
-    border-radius: var(--r-sm);
-    margin-top: 10px;
-    object-fit: cover;
-    border: 1px solid rgba(255, 255, 255, 0.1);
-}
-.msg-attachment-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    margin-top: 8px;
-    padding: 5px 10px;
-    background: rgba(0, 0, 0, 0.2);
-    border: 1px solid rgba(255, 255, 255, 0.12);
-    border-radius: var(--r-sm);
-    font-size: 12px;
-    color: rgba(255, 255, 255, 0.7);
 }
 
 /* ── Model picker ── */
@@ -1264,5 +1233,238 @@ body {
 @keyframes spin {
     to {
         transform: rotate(360deg);
+    }
+}
+
+/* ==========================================================================
+   ── Markdown table ──
+   ========================================================================== */
+.md-table-wrap {
+    overflow-x: auto;
+    margin: 16px 0;
+    border-radius: var(--r-md);
+    border: 1px solid var(--border);
+}
+.md-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 14px;
+    line-height: 1.55;
+    min-width: 320px;
+}
+.md-table th,
+.md-table td {
+    padding: 10px 14px;
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+}
+.md-table th {
+    background: var(--surface2);
+    font-weight: 600;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    color: var(--text-sub);
+    white-space: nowrap;
+}
+.md-table td {
+    color: var(--text);
+}
+.md-table tbody tr:last-child td {
+    border-bottom: none;
+}
+.md-table tbody tr:hover td {
+    background: rgba(255, 255, 255, 0.025);
+}
+
+/* ==========================================================================
+   ── body.is-mobile — applied by JS when a touch/mobile device is detected.
+   These rules run in addition to (and override) the @media breakpoints so
+   a phone in any orientation gets readable, touch-friendly styles.
+   ========================================================================== */
+body.is-mobile .msg-body {
+    font-size: 17px;
+    line-height: 1.95;
+    padding: 16px 18px;
+    max-width: 94%;
+}
+body.is-mobile .msg-body h1 {
+    font-size: 22px;
+    margin: 1.1em 0 0.5em;
+}
+body.is-mobile .msg-body h2 {
+    font-size: 19px;
+    margin: 1.1em 0 0.45em;
+}
+body.is-mobile .msg-body h3 {
+    font-size: 17px;
+    margin: 1em 0 0.4em;
+}
+body.is-mobile .msg-body p {
+    margin-bottom: 1em;
+}
+body.is-mobile .msg-body ul,
+body.is-mobile .msg-body ol {
+    padding-left: 22px;
+    margin-bottom: 1em;
+}
+body.is-mobile .msg-body li {
+    margin-bottom: 6px;
+    line-height: 1.85;
+}
+body.is-mobile .msg-body code {
+    font-size: 14px;
+    padding: 3px 7px;
+}
+body.is-mobile .msg-body pre {
+    font-size: 13px;
+    padding: 14px;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+}
+body.is-mobile .msg {
+    gap: 10px;
+    margin-bottom: 22px;
+}
+body.is-mobile .msg-avatar {
+    width: 30px;
+    height: 30px;
+    font-size: 14px;
+}
+/* Larger touch targets for buttons */
+body.is-mobile .btn {
+    padding: 12px 20px;
+    font-size: 15px;
+    border-radius: 12px;
+}
+body.is-mobile .model-btn {
+    padding: 10px 14px;
+    font-size: 14px;
+}
+body.is-mobile #queryInput {
+    font-size: 16px; /* prevents iOS auto-zoom on focus */
+    line-height: 1.6;
+}
+body.is-mobile .input-shell {
+    border-radius: 20px;
+    padding: 16px 16px 12px;
+}
+body.is-mobile .welcome-message h2 {
+    font-size: 26px;
+}
+body.is-mobile .welcome-message p {
+    font-size: 16px;
+    line-height: 1.7;
+}
+/* Research card readability on mobile */
+body.is-mobile .rc-step-main {
+    font-size: 14px;
+    white-space: normal; /* allow wrapping on narrow screens */
+}
+body.is-mobile .rc-step-sub {
+    font-size: 12px;
+    white-space: normal;
+}
+body.is-mobile .rc-browsing-domain {
+    font-size: 14px;
+}
+/* Source pills wrap on mobile */
+body.is-mobile .rc-sources-list {
+    gap: 8px;
+}
+body.is-mobile .rc-source-pill {
+    font-size: 13px;
+    padding: 6px 12px 6px 8px;
+}
+/* Tables scroll horizontally, larger text */
+body.is-mobile .md-table th,
+body.is-mobile .md-table td {
+    font-size: 14px;
+    padding: 10px 12px;
+}
+
+/* ==========================================================================
+   ── Responsive — mobile & narrow viewports ──
+   ========================================================================== */
+@media (max-width: 640px) {
+    /* Header */
+    .app-header {
+        padding: 10px 16px;
+    }
+    .logo-text {
+        font-size: 16px;
+    }
+
+    /* Chat history children: tighter horizontal padding */
+    .chat-history > * {
+        padding-left: 12px;
+        padding-right: 12px;
+    }
+
+    /* Input area — keep safe-area-inset even on small screens */
+    .input-area {
+        padding: 6px 12px calc(14px + env(safe-area-inset-bottom, 0px));
+    }
+
+    /* Message bubbles */
+    .msg-body {
+        max-width: 90%;
+        padding: 12px 14px;
+        font-size: 14px;
+    }
+    .msg {
+        gap: 8px;
+    }
+    .msg-avatar {
+        width: 28px;
+        height: 28px;
+        font-size: 13px;
+    }
+
+    /* Welcome screen */
+    .welcome-message h2 {
+        font-size: 22px;
+    }
+    .welcome-message p {
+        font-size: 14px;
+    }
+    .example-queries {
+        flex-direction: column;
+        align-items: stretch;
+        padding: 0 4px;
+    }
+    .example-query {
+        text-align: center;
+    }
+
+    /* Model picker — truncate long model names */
+    #modelLabel {
+        max-width: 110px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    /* Research card */
+    .research-card {
+        min-width: 0;
+    }
+
+    /* Tables: make cells smaller on mobile */
+    .md-table th,
+    .md-table td {
+        padding: 7px 10px;
+        font-size: 12px;
+    }
+}
+
+@media (max-width: 380px) {
+    .btn-primary {
+        padding: 8px 12px;
+        font-size: 12px;
+    }
+    .model-btn {
+        padding: 6px 10px;
     }
 }

@@ -3,12 +3,10 @@ X-LLM-Search – Main Application
 
 FastAPI backend providing:
 - Proxied /api/models endpoint that fetches from the LLM backend
-- Search via WebSocket with live progress events and file attachment support
-- PDF parsing endpoint
+- Search via WebSocket with live progress events and conversation memory
 - Static file serving for the frontend
 """
 
-import io
 import json
 import logging
 import sys
@@ -25,9 +23,6 @@ from backend.pipeline import SearchEvent, SearchPipeline
 from backend.search_engine import SearXNGClient
 from fastapi import (
     FastAPI,
-    File,
-    HTTPException,
-    UploadFile,
     WebSocket,
     WebSocketDisconnect,
 )
@@ -107,26 +102,6 @@ async def list_models():
         return {"models": [], "error": str(e)}
 
 
-@app.post("/api/parse-pdf")
-async def parse_pdf(file: UploadFile = File(...)):
-    """Extract plain text from an uploaded PDF file using pypdf."""
-    try:
-        from pypdf import PdfReader
-
-        data = await file.read()
-        reader = PdfReader(io.BytesIO(data))
-        pages = [page.extract_text() or "" for page in reader.pages]
-        content = "\n\n".join(p.strip() for p in pages if p.strip())
-        return {
-            "content": content,
-            "pages": len(reader.pages),
-            "filename": file.filename,
-        }
-    except Exception as e:
-        logger.error("PDF parse error: %s", e)
-        raise HTTPException(status_code=422, detail=f"Could not parse PDF: {e}")
-
-
 @app.websocket("/ws/search")
 async def search_ws(websocket: WebSocket):
     """
@@ -142,9 +117,8 @@ async def search_ws(websocket: WebSocket):
         payload = json.loads(raw)
         query = payload.get("query", "").strip()
         model_override = payload.get("model") or settings.llm_backend.model
-        attachment = payload.get(
-            "attachment"
-        )  # {"type": "text"|"image", "content": "...", "data_url": "..."}
+        history = payload.get("history") or []
+        is_mobile = bool(payload.get("is_mobile", False))
 
         if not query:
             await websocket.send_json({"type": "error", "message": "Query is empty"})
@@ -157,7 +131,9 @@ async def search_ws(websocket: WebSocket):
             await websocket.send_json(event.to_dict())
 
         engine = SearchPipeline(searxng_client, client, emit)
-        answer, sources = await engine.normal_search(query, attachment=attachment)
+        answer, sources = await engine.normal_search(
+            query, history=history, is_mobile=is_mobile
+        )
 
         await websocket.send_json(
             {

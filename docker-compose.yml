@@ -15,16 +15,26 @@ services:
     ports:
       - "11434:11434"
     restart: unless-stopped
+    # Start the server, wait for it to be ready, then pull the model.
+    # The pull is skipped automatically if the model is already present.
+    entrypoint: ["/bin/sh", "-c"]
+    command: |
+      ollama serve &
+      until ollama list >/dev/null 2>&1; do
+        echo '[ollama-init] waiting for server...'
+        sleep 3
+      done
+      echo '[ollama-init] pulling qwen3.5:9b'
+      ollama pull qwen3.5:9b || echo '[ollama-init] WARNING: pull failed — server still running'
+      echo '[ollama-init] done'
+      wait
 
-  # ── X-LLM-Search web app ────────────────────────────────────────────────────
+  # ── X-LLM-Search web app ────────────────────────────────────────────
   x-llm-search:
     build: .
     container_name: x-llm-search
     ports:
       - "8000:8000"
-    volumes:
-      - ./config:/app/config
-      - .:/app
     environment:
       - PYTHONUNBUFFERED=1
     depends_on:
