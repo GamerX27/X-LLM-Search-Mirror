@@ -14,6 +14,7 @@ import logging
 import re
 from typing import List, Tuple
 
+import httpx
 from openai import AsyncOpenAI
 
 logger = logging.getLogger(__name__)
@@ -51,8 +52,22 @@ class LLMClient:
         messages: List[dict],
         temperature: float = 0.7,
         max_tokens: int = 4096,
+        think: bool | None = None,
     ) -> str:
-        """Send a chat completion request and return the response text."""
+        """
+        Send a chat completion request and return the response text.
+
+        When think=False, calls the native Ollama /api/chat endpoint so that
+        thinking mode is genuinely disabled (the OpenAI-compat layer ignores
+        the think flag).  Falls back to the OpenAI-compat endpoint for
+        non-Ollama backends or when think is not specified.
+        """
+        if think is False:
+            # Use native Ollama API — the only reliable way to disable thinking
+            return await self._ollama_chat(
+                messages, temperature, max_tokens, think=False
+            )
+
         try:
             response = await self.client.chat.completions.create(
                 model=self.model,
@@ -61,10 +76,98 @@ class LLMClient:
                 max_tokens=max_tokens,
             )
             content = response.choices[0].message.content or ""
-            logger.debug(f"LLM completion ({self.model}): {len(content)} chars")
+            # Fallback: native thinking models may put content in .thinking
+            if not content:
+                native = getattr(response.choices[0].message, "thinking", None)
+                if native:
+                    content = str(native).strip()
+            logger.debug("LLM completion (%s): %d chars", self.model, len(content))
             return content
         except Exception as e:
-            logger.error(f"LLM request failed: {e}")
+            logger.error("LLM request failed: %s", e)
+            raise
+
+    async def _ollama_chat(
+        self,
+        messages: List[dict],
+        temperature: float,
+        max_tokens: int,
+        think: bool = True,
+    ) -> str:
+        """
+        Call the native Ollama /api/chat endpoint directly.
+        This is the only way to reliably control the think flag —
+        the OpenAI-compatible layer silently ignores extra_body.
+        """
+        try:
+            async with httpx.AsyncClient(timeout=120.0) as http:
+                resp = await http.post(
+                    f"{self.base_url}/api/chat",
+                    json={
+                        "model": self.model,
+                        "messages": messages,
+                        "stream": False,
+                        "think": think,
+                        "options": {
+                            "temperature": temperature,
+                            "num_predict": max_tokens,
+                        },
+                    },
+                )
+                resp.raise_for_status()
+                data = resp.json()
+            content = data.get("message", {}).get("content", "") or ""
+            logger.debug(
+                "Ollama native chat (%s, think=%s): %d chars",
+                self.model,
+                think,
+                len(content),
+            )
+            return content
+        except Exception as e:
+            logger.error("Ollama native chat failed (%s): %s", self.model, e)
+            raise
+
+    async def _native_thinking(
+        self,
+        messages: List[dict],
+        temperature: float,
+        max_tokens: int,
+        num_ctx: int,
+    ) -> Tuple[str, str]:
+        """
+        Synthesis via the native Ollama /api/chat endpoint.
+        Used when num_ctx is specified because the OpenAI-compat layer
+        silently ignores options like num_ctx and keep_alive.
+        """
+        try:
+            async with httpx.AsyncClient(timeout=300.0) as http:
+                resp = await http.post(
+                    f"{self.base_url}/api/chat",
+                    json={
+                        "model": self.model,
+                        "messages": messages,
+                        "stream": False,
+                        "think": True,
+                        "options": {
+                            "temperature": temperature,
+                            "num_predict": max_tokens,
+                            "num_ctx": num_ctx,
+                        },
+                    },
+                )
+                resp.raise_for_status()
+                data = resp.json()
+            content = data.get("message", {}).get("content", "") or ""
+            thinking = data.get("message", {}).get("thinking", "") or ""
+            if not content and thinking:
+                logger.warning("Synthesis content empty — promoting thinking as answer")
+                content = thinking
+                thinking = ""
+            logger.debug("Native synthesis (%s): %d chars", self.model, len(content))
+            return content, thinking
+        except Exception as e:
+            logger.error("Native synthesis failed (%s): %s", self.model, e)
             raise
 
     async def chat_completion_thinking(
@@ -72,6 +175,8 @@ class LLMClient:
         messages: List[dict],
         temperature: float = 0.7,
         max_tokens: int = 4096,
+        keep_alive: str | None = None,
+        num_ctx: int | None = None,
     ) -> Tuple[str, str]:
         """
         Send a chat completion request and extract chain-of-thought reasoning.
@@ -84,14 +189,21 @@ class LLMClient:
         Returns:
             (content, thinking) — thinking is empty string when not available.
         """
+        # When num_ctx is set use the native API (OpenAI-compat ignores options)
+        if num_ctx is not None:
+            return await self._native_thinking(messages, temperature, max_tokens, num_ctx)
+
         # First attempt: request thinking via Ollama's native parameter
         try:
+            extra: dict = {"think": True}
+            if keep_alive is not None:
+                extra["keep_alive"] = keep_alive
             response = await self.client.chat.completions.create(
                 model=self.model,
                 messages=messages,
                 temperature=temperature,
                 max_tokens=max_tokens,
-                extra_body={"think": True},
+                extra_body=extra,
             )
             raw = response.choices[0].message.content or ""
             thinking = ""

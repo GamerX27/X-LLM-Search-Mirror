@@ -7,7 +7,7 @@
             content="width=device-width, initial-scale=1.0, viewport-fit=cover"
         />
         <title>X-LLM-Search</title>
-        <link rel="stylesheet" href="/static/css/style.css?v=4" />
+        <link rel="stylesheet" href="/static/css/style.css?v=7" />
     </head>
     <body>
         <!-- ── Header ── -->
@@ -25,9 +25,8 @@
                 <div class="welcome-message">
                     <h2>What do you want to find?</h2>
                     <p>
-                        AI-powered web search — reads full pages, reasons across
-                        sources, and cites every claim. Conversation is
-                        remembered for the session.
+                        Your local AI-powered search.
+                        Better privacy, self-hosted on your own hardware.
                     </p>
                 </div>
             </div>
@@ -38,6 +37,11 @@
                 <div id="errorPanel" class="error-panel hidden">
                     <span>⚠️</span>
                     <span id="errorMessage"></span>
+                </div>
+
+                <!-- Autocomplete suggestion pills — appear above the search box -->
+                <div class="autocomplete-wrap hidden" id="autocompleteWrap">
+                    <ul class="autocomplete-list" id="autocompleteList"></ul>
                 </div>
 
                 <!-- Input box -->
@@ -68,7 +72,22 @@
                             </div>
                         </div>
 
+                        <!-- Right: stop / retry / search buttons -->
                         <div class="action-btns">
+                            <button
+                                id="btnRetry"
+                                class="btn btn-ghost hidden"
+                                title="Re-run last query"
+                            >
+                                ↻ Retry
+                            </button>
+                            <button
+                                id="btnStop"
+                                class="btn btn-stop hidden"
+                                title="Stop search"
+                            >
+                                ■ Stop
+                            </button>
                             <button id="btnSearch" class="btn btn-primary">
                                 Search
                             </button>
@@ -78,6 +97,6 @@
             </div>
         </main>
 
-        <script src="/static/js/app.js?v=4"></script>
+        <script src="/static/js/app.js?v=7"></script>
     </body>
 </html>

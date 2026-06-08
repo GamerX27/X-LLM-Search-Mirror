@@ -24,6 +24,19 @@ from backend.search_engine import SearXNGClient
 logger = logging.getLogger(__name__)
 
 
+async def _unload_llm(client: LLMClient) -> None:
+    """Evict a model from GPU memory immediately via the native Ollama API."""
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as http:
+            await http.post(
+                f"{client.base_url}/api/generate",
+                json={"model": client.model, "keep_alive": 0},
+            )
+        logger.info("Unloaded %s from GPU", client.model)
+    except Exception as exc:
+        logger.debug("Could not unload %s: %s", client.model, exc)
+
+
 # ---------------------------------------------------------------------------
 # Progress event types
 # ---------------------------------------------------------------------------
@@ -107,7 +120,8 @@ async def fetch_page_content(url: str, timeout: float = 15.0) -> Optional[str]:
 # At ~4 chars/token, 8 000 chars ≈ 2 000 tokens for retrieved content.
 # Keeping this modest ensures the full prompt (system + context + results)
 # stays well inside the 4k–8k context window of typical local models.
-MAX_FINDINGS_CHARS = 8_000
+MAX_FINDINGS_CHARS = 12_000
+MAX_SOURCES = 25  # cap total collected sources
 
 
 def _trim_findings(text: str) -> str:
@@ -142,36 +156,50 @@ def _build_conversation_context(history: list) -> str:
 # Prompt templates
 # ---------------------------------------------------------------------------
 
-# System identity used in every LLM call
+# The lightweight query-planning model is fixed — always lfm2.5-thinking:1.2b.
+QUERY_MODEL_NAME = "hf.co/unsloth/gemma-4-E2B-it-GGUF:UD-Q2_K_XL"
+
+# One simple system prompt for every angle call.
+# A 1.2b model is most reliable when asked for a single short output.
+QUERY_SYSTEM_PROMPT = (
+    "You are a search query writer. "
+    "Output ONLY the search query text — no labels, no QUERY:, no quotes, no explanation."
+)
+
+# Three separate angle prompts — each call asks for ONE query about a specific aspect.
+# Running three short calls beats asking a tiny model for three outputs in one shot.
+QUERY_ANGLES = [
+    # Angle 1 — background concept / core technology
+    (
+        "What is the underlying technology, category, or field behind this topic?\n"
+        "Write ONE web search query to find background information about that concept.\n"
+        "Do NOT copy the topic wording. Use technical terms experts would search for.\n\n"
+        "Topic: {query}"
+    ),
+    # Angle 2 — comparisons / alternatives
+    (
+        "What tools, products, or approaches are typically compared when researching this topic?\n"
+        "Write ONE web search query that covers comparisons or alternatives.\n"
+        "Do NOT copy the topic wording. Focus on category-level terms.\n\n"
+        "Topic: {query}"
+    ),
+    # Angle 3 — practical usage / real-world features
+    (
+        "What are the practical features, performance characteristics, or real-world use cases\n"
+        "that matter most for this topic?\n"
+        "Write ONE web search query about that practical angle.\n"
+        "Do NOT copy the topic wording.\n\n"
+        "Topic: {query}"
+    ),
+]
+
+# System identity for the full answer-synthesis model (user's chosen model)
 SEARCH_SYSTEM_PROMPT = (
     "You are an expert research assistant with real-time web search capabilities. "
     "You search the internet thoroughly and synthesize findings into accurate, "
     "well-structured, and fully-cited answers. "
     "Always cite facts using [Source N] notation referencing the provided sources."
 )
-
-# Forces strategic, multi-angle query generation — inspired by Brave Search AI
-QUERY_EXPANSION_PROMPT = """\
-You are a professional search strategist. Convert the user's question into {n} highly effective, \
-diverse web search queries that together will find comprehensive information from multiple sources.
-
-Think step-by-step:
-1. What is the core information need? (factual lookup, how-to, recent news, comparison, etc.)
-2. What different angles must be covered? (causes, effects, examples, official docs, expert opinion, current status)
-3. What precise terminology will surface authoritative sources? (technical terms, proper names, official phrases)
-4. Which queries should target recent information vs. background knowledge?
-
-Rules for each query:
-- Cover a DIFFERENT aspect or source type than the others
-- Use specific, precise language that experts and authoritative sites use
-- Avoid generic phrasing — be as targeted as possible
-- Include time signals ("2024", "latest", "current") where recency matters
-
-User question: {query}
-
-Output exactly {n} search queries, one per line:
-QUERY: <targeted search query>
-"""
 
 # Gap analysis — asks the LLM what's still missing after the first search round
 GAP_ANALYSIS_PROMPT = """\
@@ -244,48 +272,90 @@ class SearchPipeline:
     def __init__(
         self,
         searxng_client: SearXNGClient,
-        llm_client: LLMClient,
+        query_llm: LLMClient,  # lightweight model (lfm2.5-thinking:1.2b) — plans search queries
+        answer_llm: LLMClient,  # user-selected model — synthesizes the final answer
         on_event: Callable[[SearchEvent], Awaitable[None]],
     ) -> None:
         self.searxng = searxng_client
-        self.llm = llm_client
+        self.query_llm = query_llm
+        self.answer_llm = answer_llm
         self.on_event = on_event
 
-    # ── Query expansion ────────────────────────────────────────────────────
+    # ── Query expansion ──────────────────────────────────────────────────
 
-    async def _expand_query(self, query: str, n: int = 5) -> List[str]:
-        """Use the LLM to generate n targeted, diverse search queries.
-
-        Falls back to [query] if the LLM returns nothing useful.
+    async def _expand_query(self, query: str, n: int = 3) -> List[str]:
         """
-        prompt = QUERY_EXPANSION_PROMPT.format(query=query, n=n)
-        try:
-            content, thinking = await self.llm.chat_completion_thinking(
-                messages=[
-                    {"role": "system", "content": SEARCH_SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt},
-                ],
-                temperature=0.7,
-                max_tokens=400,
-            )
-            if thinking:
-                await self.on_event(
-                    SearchEvent(
-                        "thinking", {"content": thinking, "label": "Query planning"}
+        Generate n conceptually diverse search queries using one call per angle.
+
+        Uses plain chat_completion (no thinking parameter) because:
+        - extra_body={"think": True} eats the max_tokens budget on <think> tags,
+          leaving the content field empty for small models.
+        - Each call asks for ONE short answer, which a 1.2b model handles reliably.
+        """
+        queries: List[str] = []
+
+        for i, angle_template in enumerate(QUERY_ANGLES[:n]):
+            prompt = angle_template.format(query=query)
+            try:
+                raw = await self.query_llm.chat_completion(
+                    messages=[
+                        {"role": "system", "content": QUERY_SYSTEM_PROMPT},
+                        {"role": "user", "content": prompt},
+                    ],
+                    temperature=0.7,
+                    max_tokens=120,
+                    think=False,  # force native Ollama API with think:false
+                )
+
+                logger.info("Angle %d raw: %r", i + 1, raw[:300])
+
+                # Strip any residual <think> blocks (safety net)
+                if "<think>" in raw:
+                    stripped = re.sub(
+                        r"<think>.*?</think>", "", raw, flags=re.DOTALL
+                    ).strip()
+                    # If nothing left after stripping, grab text after last </think>
+                    if not stripped:
+                        m = re.search(r"</think>\s*(.+)", raw, re.DOTALL)
+                        stripped = m.group(1).strip() if m else ""
+                    raw = stripped
+
+                # Take the first non-empty line only
+                first_line = next(
+                    (ln.strip() for ln in raw.splitlines() if ln.strip()), ""
+                )
+
+                # Strip accidental labels the model might prepend
+                q = (
+                    re.sub(
+                        r"^(QUERY:\s*|query:\s*|\d+[.)\s]+|-\s*)",
+                        "",
+                        first_line,
+                        flags=re.IGNORECASE,
                     )
+                    .strip()
+                    .strip('"')
+                    .strip("'")
                 )
-            queries = [
-                line.replace("QUERY:", "").strip()
-                for line in content.split("\n")
-                if line.strip().startswith("QUERY:")
-            ][:n]
-            if queries:
-                logger.info(
-                    "Expanded '%s' → %d queries: %s", query, len(queries), queries
-                )
-                return queries
-        except Exception as e:
-            logger.warning(f"Query expansion failed: {e}")
+
+                logger.info("Angle %d cleaned: %r", i + 1, q)
+
+                if q and len(q) > 5:
+                    queries.append(q)
+                    logger.info("Query %d/%d accepted: %s", i + 1, n, q)
+                else:
+                    logger.warning(
+                        "Query %d/%d rejected (too short/empty): %r", i + 1, n, q
+                    )
+
+            except Exception as e:
+                logger.warning("Query angle %d failed: %s", i + 1, e)
+
+        if queries:
+            logger.info("Expanded '%s' → %d queries: %s", query, len(queries), queries)
+            return queries
+
+        logger.warning("All angle calls failed for '%s' — using original query", query)
         return [query]
 
     # ── Gap analysis ───────────────────────────────────────────────────────
@@ -303,9 +373,9 @@ class SearchPipeline:
             n=n,
         )
         try:
-            content, _ = await self.llm.chat_completion_thinking(
+            content, _ = await self.query_llm.chat_completion_thinking(
                 messages=[
-                    {"role": "system", "content": SEARCH_SYSTEM_PROMPT},
+                    {"role": "system", "content": QUERY_SYSTEM_PROMPT},
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0.5,
@@ -349,9 +419,16 @@ class SearchPipeline:
         await self.on_event(
             SearchEvent("analyze", {"status": "Planning search strategy…"})
         )
-        expanded = await self._expand_query(query, n=5)
+        expanded = await self._expand_query(query, n=3)
         await self.on_event(
-            SearchEvent("queries", {"queries": expanded, "original": query})
+            SearchEvent(
+                "queries",
+                {
+                    "queries": expanded,
+                    "original": query,
+                    "model": self.query_llm.model,  # shown in the UI step card
+                },
+            )
         )
 
         # ── Step 2: Search all expanded queries ──────────────────────────────
@@ -363,7 +440,7 @@ class SearchPipeline:
         for eq in expanded:
             await self.on_event(SearchEvent("search", {"query": eq}))
             try:
-                results = await self.searxng.search(eq, num_results=7)
+                results = await self.searxng.search(eq, num_results=10)
             except Exception as e:
                 logger.warning(f"Search failed for '{eq}': {e}")
                 results = []
@@ -385,6 +462,9 @@ class SearchPipeline:
         if not sources:
             await self.on_event(SearchEvent("complete", {"status": "Done"}))
             return f"No search results found for '{query}'.", []
+
+        # Cap total sources so context stays manageable
+        sources = sources[:MAX_SOURCES]
 
         # ── Step 3: Fetch full page content for top sources ──────────────────
         await self.on_event(SearchEvent("analyze", {"status": "Reading top pages…"}))
@@ -455,7 +535,13 @@ class SearchPipeline:
                 combined_text += f"[Source {src_num}] {r.title}\nURL: {r.url}\nSnippet: {r.snippet}\n\n"
                 sources.append({"num": src_num, "title": r.title, "url": r.url})
 
-        # ── Step 5: Final synthesis ───────────────────────────────────────────
+        # ── Step 5: Unload query model, then synthesize ───────────────────────
+        # Free VRAM used by lfm2.5-thinking:1.2b before loading the big model.
+        await self.on_event(
+            SearchEvent("analyze", {"status": "Freeing GPU for synthesis model…"})
+        )
+        await _unload_llm(self.query_llm)
+
         await self.on_event(SearchEvent("analyze", {"status": "Synthesizing answer…"}))
 
         conversation_context = _build_conversation_context(history)
@@ -468,13 +554,14 @@ class SearchPipeline:
             results_text=_trim_findings(combined_text),
         )
 
-        answer, answer_thinking = await self.llm.chat_completion_thinking(
+        answer, answer_thinking = await self.answer_llm.chat_completion_thinking(
             messages=[
                 {"role": "system", "content": SEARCH_SYSTEM_PROMPT},
                 {"role": "user", "content": prompt},
             ],
             temperature=0.3,
-            max_tokens=3072,
+            max_tokens=4096,   # output tokens
+            num_ctx=16384,     # total context window (input + output)
         )
         if answer_thinking:
             await self.on_event(

@@ -18,10 +18,11 @@ services:
       retries: 15
       start_period: 30s
 
-  # ── One-shot model puller ─────────────────────────────────────────────────
-  # Pulls the model in the background after ollama is healthy.
-  # x-llm-search starts immediately — the model appears in the picker
-  # automatically once the download finishes.
+  # ── One-shot model pullers ─────────────────────────────────────────────────────
+  # Both run in parallel after ollama is healthy.
+  # x-llm-search starts immediately; models appear in the picker once downloaded.
+
+  # Main answer model
   ollama-pull:
     image: ollama/ollama:rocm
     container_name: ollama-pull
@@ -31,6 +32,19 @@ services:
     environment:
       - OLLAMA_HOST=http://ollama:11434
     entrypoint: ["ollama", "pull", "qwen3.5:9b"]
+    restart: "no"
+
+  # Lightweight query-planning model (hidden from the UI picker)
+  ollama-pull-query:
+    image: ollama/ollama:rocm
+    container_name: ollama-pull-query
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+    entrypoint:
+      ["ollama", "pull", "hf.co/unsloth/gemma-4-E2B-it-GGUF:UD-Q2_K_XL"]
     restart: "no"
 
   # ── X-LLM-Search web app ──────────────────────────────────────────────────
